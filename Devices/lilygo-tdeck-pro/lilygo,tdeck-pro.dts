@@ -8,16 +8,31 @@
 #include <tactility/bindings/esp32_spi.h>
 #include <tactility/bindings/esp32_sdspi.h>
 #include <tactility/bindings/esp32_pwm_ledc.h>
+#include <tactility/bindings/esp32_i2s.h>
+#include <tactility/bindings/esp32_uart.h>
 #include <tactility/bindings/esp32_usbdevice.h>
 #include <tactility/bindings/pwm_backlight.h>
+#include <tactility/bindings/gpio_hog.h>
 #include <bindings/cst328.h>
 #include <bindings/uc8253.h>
 #include <bindings/tca8418.h>
 #include <bindings/bq25896.h>
+#include <bindings/bq27220.h>
+#include <bindings/drv2605.h>
 #include <bindings/sx1262.h>
+#include <bindings/dummy_i2s_amp.h>
+#include <gps_generic/bindings.h>
 
-// Reference for V1.0 (not V1.1!): https://github.com/Xinyuan-LilyGO/T-Deck-Pro/tree/HD-V1-250326
-// lib/TDeckMaxBoard/src/TDeckMaxBoard.h, docs/pinmap.md
+// Reference for V1.1 (PCM5102A audio / CST3530 touch):
+// https://github.com/Xinyuan-LilyGO/T-Deck-Pro/tree/HD-V2-250915
+// Hardware revision 1.1 differs from 1.0 in several ways:
+//   - Touch controller changed from CST328 to CST3530 (Hynitron cst66xx protocol, address 0x1A).
+//   - Touch reset moved from GPIO45 to GPIO38; GPIO45 is now the EPD backlight.
+//   - EPD reset is now wired to GPIO16 (was unconnected on V1.0).
+//   - DRV2605 haptic driver added at I2C address 0x5A.
+//   - BQ27220 fuel gauge added at I2C address 0x55.
+//   - PCM5102A I2S DAC for audio output on GPIO7/8/9.
+//   - GPS (MIA-M10Q) on UART1 TX=GPIO43 RX=GPIO44.
 / {
 	compatible = "root";
 	model = "LilyGO T-Deck Pro";
@@ -35,6 +50,63 @@
 		gpio-count = <49>;
 	};
 
+	// Power rails / module enables. The LilyGO factory firmware drives these high at boot.
+	// GPIO41 (BOARD_6609_EN) gates power to the PCM5102A audio section on the voice variant.
+	// GPIO46 enables the SX1262 LoRa module. GPIO39 enables the GPS module. GPIO2 is the
+	// vibration motor enable (DRV2605 output stage). GPIO45 is the EPD front-light.
+	power_6609_en {
+		compatible = "gpio-hog";
+		pin = <&gpio0 41 GPIO_FLAG_NONE>;
+		mode = <GPIO_HOG_MODE_OUTPUT_HIGH>;
+	};
+
+	power_lora_en {
+		compatible = "gpio-hog";
+		pin = <&gpio0 46 GPIO_FLAG_NONE>;
+		mode = <GPIO_HOG_MODE_OUTPUT_HIGH>;
+	};
+
+	power_gps_en {
+		compatible = "gpio-hog";
+		pin = <&gpio0 39 GPIO_FLAG_NONE>;
+		mode = <GPIO_HOG_MODE_OUTPUT_HIGH>;
+	};
+
+	power_motor_en {
+		compatible = "gpio-hog";
+		pin = <&gpio0 2 GPIO_FLAG_NONE>;
+		mode = <GPIO_HOG_MODE_OUTPUT_HIGH>;
+	};
+
+	// EPD front-light (added on V1.1). Off by default; apps can enable it via pwm-backlight.
+	display_backlight_pwm {
+		compatible = "espressif,esp32-pwm-ledc";
+		pin = <&gpio0 45 GPIO_FLAG_NONE>;
+		period-ns = <33333>;
+		ledc-timer = <0>;
+		ledc-channel = <0>;
+	};
+
+	display_backlight {
+		compatible = "pwm-backlight";
+		status = "disabled";
+		pwm = <&display_backlight_pwm>;
+	};
+
+	// PCM5102A stereo DAC (I2S input, no I2C control).
+	i2s0 {
+		compatible = "espressif,esp32-i2s";
+		port = <I2S_NUM_0>;
+		pin-bclk = <&gpio0 7 GPIO_FLAG_NONE>;
+		pin-ws = <&gpio0 9 GPIO_FLAG_NONE>;
+		pin-data-out = <&gpio0 8 GPIO_FLAG_NONE>;
+	};
+
+	speaker0 {
+		compatible = "ti,pcm5102a";
+		i2s = <&i2s0>;
+	};
+
 	i2c0 {
 		compatible = "espressif,esp32-i2c-master";
 		port = <I2C_NUM_0>;
@@ -42,10 +114,13 @@
 		pin-sda = <&gpio0 13 GPIO_FLAG_NONE>;
 		pin-scl = <&gpio0 14 GPIO_FLAG_NONE>;
 
+		// Some T-Deck Pro V1.1 boards ship the CST328 (older stock) instead of CST3530.
+		// Both live at I2C address 0x1A and use reset GPIO38. If this driver doesn't work,
+		// switch back to hynitron,cst66xx for CST3530 boards.
 		touch {
 			compatible = "hynitron,cst328";
 			reg = <0x1A>;
-			pin-reset = <&gpio0 45 GPIO_FLAG_NONE>;
+			pin-reset = <&gpio0 38 GPIO_FLAG_NONE>;
 		};
 
 		// TCA8418 4x10 matrix scanner. Keymaps are written in the vendor's row/column
@@ -82,17 +157,26 @@
 			sym-col = <8>;
 		};
 
-		bq27220 {
+		// BQ25896 charger at 0x6B.
+		bq25896 {
 			compatible = "ti,bq25896";
 			reg = <0x6B>;
 		};
+
+		// BQ27220 fuel gauge at 0x55 (added on V1.1).
+		bq27220 {
+			compatible = "ti,bq27220";
+			reg = <0x55>;
+		};
+
+		// DRV2605 haptic driver at 0x5A (added on V1.1).
+		drv2605 {
+			compatible = "ti,drv2605";
+			reg = <0x5A>;
+		};
 	};
 
-	// Keyboard backlight (LED_PWM), GPIO42. The keypress-triggered flash/decay effect
-	// from the pre-migration driver isn't reproduced here - kernel drivers don't have a
-	// home for that kind of UI policy (same reasoning as the touch driver's dropped bezel
-	// keys). Off by default; app code can drive brightness via the generic pwm-backlight
-	// API if desired.
+	// Keyboard backlight (LED_PWM), GPIO42. Off by default; apps can drive it via pwm-backlight.
 	keyboard_backlight_pwm {
 		compatible = "espressif,esp32-pwm-ledc";
 		pin = <&gpio0 42 GPIO_FLAG_NONE>;
@@ -123,6 +207,7 @@
 		display@0 {
 			compatible = "ultrachip,uc8253";
 			pin-dc = <&gpio0 35 GPIO_FLAG_NONE>;
+			pin-reset = <&gpio0 16 GPIO_FLAG_NONE>;
 			pin-busy = <&gpio0 37 GPIO_FLAG_NONE>;
 			pin-cs = <&gpio0 34 GPIO_FLAG_NONE>;
 			clock-speed-hz = <10000000>;
@@ -146,6 +231,20 @@
 			pin-enable = <&gpio0 46 GPIO_FLAG_NONE>;
 			tcxo-millivolts = <2400>;
 			dio2-as-rf-switch;
+		};
+	};
+
+	uart_gps {
+		compatible = "espressif,esp32-uart";
+		port = <UART_NUM_2>;
+		pin-tx = <&gpio0 43 GPIO_FLAG_NONE>;
+		pin-rx = <&gpio0 44 GPIO_FLAG_NONE>;
+
+		gps {
+			compatible = "tactility,gps-generic";
+			status = "disabled";
+			baud-rate = <38400>;
+			model = <GPS_MODEL_UBLOX10>;
 		};
 	};
 

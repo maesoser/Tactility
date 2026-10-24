@@ -3,7 +3,11 @@ dependencies:
   - Drivers/cst328-module
   - Drivers/uc8253-module
   - Drivers/tca8418-module
-  - Drivers/sy6970-module
   - Drivers/bq25896-module
+  - Drivers/bq27220-module
+  - Drivers/drv2605-module
+  - Drivers/dummy-i2s-amp-module
+  - Drivers/audio-stream-module
   - Drivers/sx126x-module
+  - Drivers/gps-generic-module
 dts: lilygo,tdeck-pro.dts

@@ -1,0 +1,13 @@
+description: TI PCM5102A stereo DAC (I2S input, no register interface, no GPIO enable)
+
+compatible: "ti,pcm5102a"
+
+properties:
+  i2s:
+    type: phandle
+    required: true
+    description: "I2S controller device that carries audio data"
+  pin-enable:
+    type: phandles
+    default: GPIO_PIN_SPEC_NONE
+    description: "Not used by PCM5102A; kept for struct compatibility"
